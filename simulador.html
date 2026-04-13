@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Web Caching Avanzado</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+        }
+
+        .code-font {
+            font-family: 'Fira Code', monospace;
+        }
+
+        /* Animaciones para flujo de red */
+        .packet {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0;
+            z-index: 10;
+            box-shadow: 0 0 8px rgba(0,0,0,0.3);
+        }
+
+        @keyframes moveRight {
+            0% { left: 10%; opacity: 1; }
+            90% { left: 90%; opacity: 1; }
+            100% { left: 90%; opacity: 0; }
+        }
+
+        @keyframes moveLeft {
+            0% { left: 90%; opacity: 1; }
+            90% { left: 10%; opacity: 1; }
+            100% { left: 10%; opacity: 0; }
+        }
+
+        .animate-req { background-color: #3b82f6; animation: moveRight 0.8s forwards; }
+        .animate-res { background-color: #10b981; animation: moveLeft 0.8s forwards; }
+        .animate-res-304 { background-color: #f59e0b; animation: moveLeft 0.8s forwards; }
+        .animate-res-err { background-color: #ef4444; animation: moveLeft 0.8s forwards; }
+
+        .node-pulse { animation: pulse-node 0.5s ease-out; }
+
+        @keyframes pulse-node {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+            50% { transform: scale(1.1); box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+            100% { transform: scale(1); }
+        }
+
+        .server-offline { filter: grayscale(100%) opacity(0.6); }
+        
+        .log-container::-webkit-scrollbar { width: 8px; }
+        .log-container::-webkit-scrollbar-track { background: #1f2937; }
+        .log-container::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        
+        /* Toggle Switch */
+        .toggle-checkbox:checked { right: 0; border-color: #10B981; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #10B981; }
+    </style>
+</head>
+<body class="p-4 md:p-6 min-h-screen flex flex-col">
+
+    <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
+                <i class="fas fa-network-wired text-blue-600"></i>
+                Simulador de Caching Avanzado
+            </h1>
+            <p class="text-gray-600 mt-1 text-sm">Compara ETag vs Last-Modified y prueba directivas estrictas.</p>
+        </div>
+        
+        <!-- Toggle Estado Servidor -->
+        <div class="flex items-center gap-3 bg-white p-2 px-4 rounded-lg shadow-sm border border-gray-200">
+            <span class="text-sm font-medium text-gray-700">Estado de Red:</span>
+            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                <input type="checkbox" name="toggle" id="networkToggle" checked class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 top-0 transition-all duration-300" onchange="toggleNetwork()"/>
+                <label for="networkToggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer transition-colors duration-300"></label>
+            </div>
+            <span id="networkStatusLabel" class="text-sm font-bold text-green-600 w-16">Online</span>
+        </div>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-grow">
+        
+        <!-- PANEL IZQUIERDO: Servidor -->
+        <div class="lg:col-span-4 flex flex-col gap-6">
+            
+            <div class="bg-white p-5 rounded-xl shadow-sm border-t-4 border-t-purple-500 border border-gray-200" id="serverPanel">
+                <h2 class="text-lg font-semibold mb-4 border-b pb-2 flex justify-between items-center">
+                    <span><i class="fas fa-server text-purple-500 mr-2"></i> Servidor Origen</span>
+                </h2>
+                
+                <div class="space-y-4">
+                    <!-- Configuración Cache-Control -->
+                    <div class="bg-purple-50 p-3 rounded-lg border border-purple-100">
+                        <label class="block text-sm font-bold text-purple-900 mb-1">Directiva Cache-Control</label>
+                        <select id="cachePolicy" class="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-purple-500 focus:border-purple-500 text-sm bg-white" onchange="updateServerConfig()">
+                            <option value="max-age=10">max-age=10 (Caché normal)</option>
+                            <option value="max-age=10, must-revalidate">max-age=10, must-revalidate (Estricto)</option>
+                            <option value="no-cache">no-cache (Validación obligatoria)</option>
+                            <option value="no-store">no-store (Prohíbe caché)</option>
+                        </select>
+                    </div>
+
+                    <!-- Configuración Validador -->
+                    <div class="bg-blue-50 p-3 rounded-lg border border-blue-100">
+                        <label class="block text-sm font-bold text-blue-900 mb-1">Validador Principal (Slide 7)</label>
+                        <select id="validatorType" class="w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500 text-sm bg-white" onchange="updateServerConfig()">
+                            <option value="etag">ETag (Por Identidad / Hash)</option>
+                            <option value="last-modified">Last-Modified (Por Tiempo)</option>
+                        </select>
+                        <p class="text-xs text-blue-700 mt-1" id="validatorDesc">El servidor comparará hashes criptográficos.</p>
+                    </div>
+
+                    <!-- Estado Actual del Archivo -->
+                    <div class="bg-gray-50 p-3 rounded-md text-sm border border-gray-200">
+                        <p class="font-bold text-gray-700 mb-2 border-b pb-1">Recurso Actual:</p>
+                        <p class="flex justify-between items-center mb-1"><span class="text-gray-500">Contenido:</span> <span id="srvVersion" class="font-bold text-gray-800 bg-gray-200 px-2 rounded">Versión 1</span></p>
+                        <p class="flex justify-between items-center mb-1"><span class="text-gray-500">ETag (Hash):</span> <span id="srvEtag" class="code-font text-xs text-purple-600">"v1-hash"</span></p>
+                        <p class="flex justify-between items-center"><span class="text-gray-500">Fecha Mod.:</span> <span id="srvDate" class="font-mono text-[10px] text-gray-600"></span></p>
+                    </div>
+
+                    <!-- Acciones -->
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="modifyContent()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-2 rounded text-xs transition duration-150 shadow-sm" title="Cambia el contenido y la fecha">
+                            <i class="fas fa-file-signature mb-1"></i><br>Modificar Todo
+                        </button>
+                        <button onclick="touchFile()" class="bg-orange-500 hover:bg-orange-600 text-white font-medium py-2 px-2 rounded text-xs transition duration-150 shadow-sm" title="Cambia la fecha pero mantiene el contenido igual">
+                            <i class="fas fa-clock mb-1"></i><br>Actualizar solo Fecha
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Caché Local -->
+            <div class="bg-white p-5 rounded-xl shadow-sm border-t-4 border-t-green-500 border border-gray-200">
+                <h2 class="text-lg font-semibold mb-4 border-b pb-2">
+                    <i class="fas fa-laptop text-gray-600 mr-2"></i> Caché del Navegador
+                </h2>
+                
+                <div id="cacheStatusContainer" class="bg-gray-50 p-4 rounded-md text-sm border border-gray-200 min-h-[140px] flex flex-col justify-center">
+                    <div id="cacheEmpty" class="text-center text-gray-400">
+                        <i class="fas fa-box-open text-3xl mb-2"></i>
+                        <p>Caché vacío</p>
+                    </div>
+                    <div id="cacheData" class="hidden space-y-2">
+                        <div class="flex items-center justify-between mb-2 pb-1 border-b">
+                            <span class="font-medium text-gray-700">Estado de Frescura:</span>
+                            <span id="cacheFreshness" class="px-2 py-1 text-[10px] font-bold rounded-full uppercase tracking-wide">FRESH</span>
+                        </div>
+                        <p class="flex justify-between text-xs"><span class="text-gray-500">Directiva guardada:</span> <span id="cachePolicyTxt" class="font-mono font-bold text-blue-600"></span></p>
+                        <p class="flex justify-between text-xs"><span class="text-gray-500">Expira en:</span> <span id="cacheTimer" class="font-mono text-gray-800 font-bold">--</span></p>
+                        
+                        <div class="mt-2 bg-white p-2 rounded border border-gray-100">
+                            <p class="text-xs text-gray-400 mb-1 font-semibold uppercase">Validadores Guardados</p>
+                            <p class="flex justify-between text-xs"><span class="text-gray-500">ETag:</span> <span id="cacheEtag" class="code-font text-purple-600"></span></p>
+                            <p class="flex justify-between text-xs"><span class="text-gray-500">Last-Mod:</span> <span id="cacheDate" class="code-font text-gray-600"></span></p>
+                        </div>
+                    </div>
+                </div>
+                
+                <button onclick="clearCache()" class="w-full mt-4 bg-white hover:bg-gray-50 text-red-500 font-medium py-2 px-4 border border-red-200 rounded shadow-sm transition duration-150 text-sm">
+                    <i class="fas fa-trash-alt mr-1"></i> Limpiar Caché Local
+                </button>
+            </div>
+        </div>
+
+        <!-- PANEL DERECHO: Visualización y Logs -->
+        <div class="lg:col-span-8 flex flex-col gap-6">
+            
+            <!-- Red -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col">
+                <div class="flex justify-center mb-6">
+                    <button id="btnFetch" onclick="fetchResource()" class="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition duration-200 transform hover:-translate-y-1 active:translate-y-0 text-lg flex items-center justify-center gap-2">
+                        <i class="fas fa-hand-pointer"></i> Solicitar Recurso
+                    </button>
+                </div>
+
+                <div class="relative w-full h-32 bg-gray-50 rounded-xl border border-gray-200 flex items-center justify-between px-4 sm:px-16 overflow-hidden">
+                    <div class="absolute top-1/2 left-16 right-16 h-1 bg-gray-300 transform -translate-y-1/2 z-0 shadow-inner"></div>
+                    
+                    <div id="packetReq" class="packet"></div>
+                    <div id="packetRes" class="packet"></div>
+
+                    <!-- Nodos -->
+                    <div id="nodeBrowser" class="relative z-10 flex flex-col items-center bg-white p-3 rounded-full border-4 border-blue-200 shadow-md w-20 h-20 justify-center">
+                        <i class="fab fa-chrome text-3xl text-gray-700"></i>
+                        <span class="text-[10px] font-bold mt-1 text-gray-500 uppercase">Cliente</span>
+                    </div>
+
+                    <div id="nodeCache" class="relative z-10 flex flex-col items-center bg-white p-3 rounded-full border-4 border-green-200 shadow-md w-20 h-20 justify-center">
+                        <i class="fas fa-hdd text-2xl text-green-500"></i>
+                        <span class="text-[10px] font-bold mt-1 text-gray-500 uppercase">Caché</span>
+                    </div>
+
+                    <div id="nodeServer" class="relative z-10 flex flex-col items-center bg-white p-3 rounded-full border-4 border-purple-200 shadow-md w-20 h-20 justify-center transition-all duration-300">
+                        <i class="fas fa-server text-2xl text-purple-600"></i>
+                        <span class="text-[10px] font-bold mt-1 text-gray-500 uppercase">Origen</span>
+                        <div id="offlineCross" class="hidden absolute text-red-500 text-4xl opacity-80"><i class="fas fa-ban"></i></div>
+                    </div>
+                </div>
+                
+                <div id="flowStatus" class="text-center mt-4 text-sm font-semibold text-gray-700 h-6"></div>
+            </div>
+
+            <!-- Consola de Red (Logs) -->
+            <div class="bg-[#1e1e1e] rounded-xl shadow-md overflow-hidden flex flex-col flex-grow h-[350px]">
+                <div class="bg-[#2d2d2d] px-4 py-2 border-b border-gray-700 flex justify-between items-center">
+                    <span class="text-gray-300 text-sm font-bold flex items-center gap-2"><i class="fas fa-terminal"></i> HTTP Network Inspector</span>
+                    <button onclick="clearLogs()" class="text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-700 rounded"><i class="fas fa-eraser mr-1"></i>Limpiar</button>
+                </div>
+                <div id="networkLogs" class="p-4 overflow-y-auto log-container space-y-3 code-font text-sm text-gray-300 h-full">
+                    <div class="text-green-400 text-xs italic">// Simulador inicializado. Listo para recibir peticiones.</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // --- ESTADO DEL SIMULADOR ---
+
+        const BASE_ETAG_PREFIX = "hash-";
+
+        let serverState = {
+            version: 1,
+            etagRaw: 1000, // Representación interna del Etag
+            lastModified: new Date(),
+            policy: "max-age=10",
+            validatorType: "etag", // 'etag' o 'last-modified'
+            isOnline: true
+        };
+
+        let browserCache = {
+            hasData: false,
+            version: null,
+            etag: null,
+            lastModified: null,
+            expiresAt: null,
+            policyStored: null
+        };
+
+        let cacheTimerInterval = null;
+
+        // Inicialización
+        updateServerUI();
+
+        // --- FUNCIONES DE SERVIDOR ---
+
+        function updateServerConfig() {
+            serverState.policy = document.getElementById('cachePolicy').value;
+            serverState.validatorType = document.getElementById('validatorType').value;
+            
+            let desc = "";
+            if(serverState.validatorType === "etag") desc = "Prioriza validación fuerte. Identifica cambios de contenido real independientemente de la fecha.";
+            else desc = "Validación por tiempo. Falla si se cambia la fecha sin alterar el contenido.";
+            document.getElementById('validatorDesc').innerText = desc;
+        }
+
+        function toggleNetwork() {
+            serverState.isOnline = document.getElementById('networkToggle').checked;
+            const label = document.getElementById('networkStatusLabel');
+            const panel = document.getElementById('serverPanel');
+            const node = document.getElementById('nodeServer');
+            const cross = document.getElementById('offlineCross');
+
+            if (serverState.isOnline) {
+                label.innerText = "Online";
+                label.className = "text-sm font-bold text-green-600 w-16";
+                panel.classList.remove('opacity-50', 'pointer-events-none');
+                node.classList.remove('server-offline');
+                cross.classList.add('hidden');
+                addLog('sys', 'Conexión a red RESTABLECIDA.');
+            } else {
+                label.innerText = "Offline";
+                label.className = "text-sm font-bold text-red-600 w-16";
+                panel.classList.add('opacity-50', 'pointer-events-none');
+                node.classList.add('server-offline');
+                cross.classList.remove('hidden');
+                addLog('sys', 'Simulando FALLA DE RED (Servidor inaccesible).');
+            }
+        }
+
+        // Simula "Modificar Contenido" (Cambia hash y fecha)
+        function modifyContent() {
+            serverState.version++;
+            serverState.etagRaw++; 
+            serverState.lastModified = new Date();
+            updateServerUI();
+            pulseNode('nodeServer');
+            addLog('sys', `Recurso modificado en servidor. Nueva versión: ${serverState.version}, Nuevo ETag generado.`);
+        }
+
+        // Simula "Touch" (Cambia solo fecha, contenido igual - Slide 7)
+        function touchFile() {
+            serverState.lastModified = new Date();
+            updateServerUI();
+            pulseNode('nodeServer');
+            addLog('sys', `Archivo tocado. Se actualizó Last-Modified pero el contenido (y ETag) siguen siendo idénticos.`);
+        }
+
+        function getEtag() {
+            return `W/"${BASE_ETAG_PREFIX}${serverState.etagRaw}"`;
+        }
+
+        function toHTTPDate(date) {
+            return date.toUTCString();
+        }
+
+        function updateServerUI() {
+            document.getElementById('srvVersion').innerText = `Versión ${serverState.version}`;
+            document.getElementById('srvEtag').innerText = getEtag();
+            document.getElementById('srvDate').innerText = toHTTPDate(serverState.lastModified);
+        }
+
+        // --- LÓGICA PRINCIPAL DEL NAVEGADOR ---
+
+        async function fetchResource() {
+            const btn = document.getElementById('btnFetch');
+            btn.disabled = true;
+            btn.classList.add('opacity-50');
+
+            document.getElementById('flowStatus').innerText = "Iniciando petición GET...";
+            pulseNode('nodeBrowser');
+
+            const now = Date.now();
+            let isFresh = false;
+            let needsValidation = false;
+
+            // 1. EVALUAR CACHÉ (Slide 2: Directivas)
+            if (browserCache.hasData) {
+                if (browserCache.policyStored === 'no-store') {
+                    // No debería haber datos, pero por seguridad
+                    isFresh = false;
+                    needsValidation = false;
+                } else if (browserCache.policyStored === 'no-cache') {
+                    // Obliga a validar siempre
+                    isFresh = false;
+                    needsValidation = true;
+                } else {
+                    // Políticas con max-age
+                    if (now < browserCache.expiresAt) {
+                        isFresh = true; // FRESH!
+                    } else {
+                        // STALE!
+                        isFresh = false;
+                        needsValidation = true;
+                    }
+                }
+            }
+
+            // --- EJECUCIÓN DEL FLUJO ---
+            
+            // CASO 1: CACHE HIT (Sin validación)
+            if (isFresh) {
+                document.getElementById('flowStatus').innerText = "Caché válido (Fresh). Entregando desde disco...";
+                pulseNode('nodeCache');
+                
+                addLog('success', `
+                    <span class="text-gray-400">GET /recurso HTTP/1.1</span><br>
+                    <span class="text-green-400 font-bold">200 OK (from disk cache)</span><br>
+                    <span class="text-gray-400 text-xs">// El recurso no ha expirado. No se consulta al servidor de origen.</span>
+                `);
+                
+                await sleep(600);
+                document.getElementById('flowStatus').innerText = "Carga rápida completada.";
+                resetBtn(btn);
+                return;
+            }
+
+            // MÁS ALLÁ DE ESTE PUNTO, SE NECESITA RED
+            document.getElementById('flowStatus').innerText = "Se requiere contactar al servidor...";
+            animatePacket('packetReq', 'req');
+            await sleep(800);
+
+            // CASO 2: SERVIDOR CAÍDO (Slide 11: 504 Gateway Timeout y must-revalidate)
+            if (!serverState.isOnline) {
+                pulseNode('nodeServer');
+                
+                if (browserCache.hasData && !browserCache.policyStored.includes('must-revalidate') && browserCache.policyStored !== 'no-cache') {
+                    // Comportamiento navegador estándar (RFC 7234): puede servir stale si está offline y no hay restricción estricta
+                    animatePacket('packetRes', 'res-304'); // Yellow animation back
+                    addLog('warn', `
+                        <span class="text-gray-400">GET /recurso HTTP/1.1</span><br>
+                        <span class="text-yellow-400 font-bold">200 OK (from stale cache) - WARNING: Disconnected</span><br>
+                        <span class="text-yellow-200 text-xs">// El servidor está offline, pero como NO usamos 'must-revalidate', el navegador entrega el contenido expirado por contingencia.</span>
+                    `);
+                    document.getElementById('flowStatus').innerText = "Servidor caído. Se sirvió caché obsoleto de emergencia.";
+                } else {
+                    // Restricción estricta activa (must-revalidate o no-cache)
+                    animatePacket('packetRes', 'res-err');
+                    addLog('error', `
+                        <span class="text-gray-400">GET /recurso HTTP/1.1</span><br>
+                        <span class="text-red-500 font-bold">504 Gateway Timeout</span><br>
+                        <span class="text-red-300 text-xs">// FALLA: La directiva exige validación ('must-revalidate' o 'no-cache') y el servidor no responde. No se permite mostrar contenido expirado.</span>
+                    `);
+                    document.getElementById('flowStatus').innerText = "Falla de red. must-revalidate impide usar caché.";
+                }
+                resetBtn(btn);
+                return;
+            }
+
+            // RED DISPONIBLE. Contactamos al servidor.
+            pulseNode('nodeServer');
+            let requestHeaders = "GET /recurso HTTP/1.1\n";
+            let responseLog = "";
+            let updateCache = false;
+            
+            // CASO 3: PETICIÓN CONDICIONAL (Validación)
+            if (needsValidation) {
+                // Preparamos los validadores según lo que guardó el cliente
+                requestHeaders += `If-None-Match: ${browserCache.etag}\n`;
+                requestHeaders += `If-Modified-Since: ${toHTTPDate(browserCache.lastModified)}\n`;
+                
+                let isModified = true;
+                let validationReason = "";
+
+                // El servidor evalúa según su configuración (Slide 7)
+                if (serverState.validatorType === 'etag') {
+                    if (browserCache.etag === getEtag()) {
+                        isModified = false;
+                        validationReason = "El ETag coincide perfectamente. (Incluso si la fecha cambió, el contenido es el mismo).";
+                    } else {
+                        validationReason = "El ETag es distinto. El contenido ha cambiado.";
+                    }
+                } else {
+                    // Valida por Last-Modified
+                    if (browserCache.lastModified.getTime() >= serverState.lastModified.getTime()) {
+                        isModified = false;
+                        validationReason = "La fecha de modificación coincide.";
+                    } else {
+                        validationReason = "La fecha en el servidor es más reciente. (Se asume cambio, aunque el contenido sea idéntico).";
+                    }
+                }
+
+                if (!isModified) {
+                    // 304 NOT MODIFIED
+                    animatePacket('packetRes', 'res-304');
+                    document.getElementById('flowStatus').innerText = "Recurso válido en origen. Recibiendo 304 Not Modified...";
+                    
+                    // Se renueva el caché
+                    if(serverState.policy.includes('max-age')) {
+                        let age = serverState.policy.includes('10') ? 10000 : 0;
+                        browserCache.expiresAt = Date.now() + age;
+                    }
+                    browserCache.policyStored = serverState.policy; // Actualiza política si cambió
+                    updateCacheUI();
+
+                    responseLog = `
+                        <span class="text-yellow-400 font-bold">304 Not Modified</span><br>
+                        Cache-Control: ${serverState.policy}<br>
+                        <span class="text-yellow-200 text-xs">// ÉXITO: ${validationReason} Se ahorró ancho de banda (sin body).</span>
+                    `;
+                } else {
+                    // 200 OK (Se modificó)
+                    animatePacket('packetRes', 'res');
+                    document.getElementById('flowStatus').innerText = "Recurso modificado. Descargando nueva versión (200 OK)...";
+                    updateCache = true;
+                    
+                    responseLog = `
+                        <span class="text-green-400 font-bold">200 OK</span><br>
+                        Cache-Control: ${serverState.policy}<br>
+                        ETag: ${getEtag()}<br>
+                        Last-Modified: ${toHTTPDate(serverState.lastModified)}<br>
+                        <span class="text-gray-400 text-xs">// DESCARGA: ${validationReason} Se bajó el recurso completo.</span>
+                    `;
+                }
+
+            } else {
+                // CASO 4: PETICIÓN NORMAL (Sin caché o no-store)
+                animatePacket('packetRes', 'res');
+                document.getElementById('flowStatus').innerText = "Descargando recurso desde cero...";
+                updateCache = true;
+
+                responseLog = `
+                    <span class="text-green-400 font-bold">200 OK</span><br>
+                    Cache-Control: ${serverState.policy}<br>
+                    ETag: ${getEtag()}<br>
+                    Last-Modified: ${toHTTPDate(serverState.lastModified)}<br>
+                    ${serverState.policy === 'no-store' ? '<span class="text-red-400 text-xs">// Directiva no-store: Evitando almacenamiento.</span>' : '<span class="text-gray-400 text-xs">// Descarga inicial completada.</span>'}
+                `;
+            }
+
+            if (updateCache) {
+                if (serverState.policy !== 'no-store') {
+                    saveToCache();
+                } else {
+                    browserCache.hasData = false;
+                    updateCacheUI();
+                }
+            }
+
+            addLog('network', `
+                <div class="mb-2 pb-2 border-b border-gray-700">
+                    <span class="text-blue-300"><i class="fas fa-arrow-right"></i> Petición Cliente:</span><br>
+                    <span class="text-gray-400 ml-4 border-l border-gray-600 pl-2 block">${requestHeaders.replace(/\n/g, '<br>')}</span>
+                </div>
+                <div>
+                    <span class="text-green-300"><i class="fas fa-arrow-left"></i> Respuesta Servidor:</span><br>
+                    <span class="ml-4 border-l border-gray-600 pl-2 block">${responseLog}</span>
+                </div>
+            `);
+
+            await sleep(800);
+            document.getElementById('flowStatus').innerText = "Transacción HTTP finalizada.";
+            pulseNode('nodeBrowser');
+            resetBtn(btn);
+        }
+
+        function resetBtn(btn) {
+            btn.disabled = false;
+            btn.classList.remove('opacity-50');
+            setTimeout(() => { if(!btn.disabled) document.getElementById('flowStatus').innerText = ""; }, 2000);
+        }
+
+        // --- MANEJO DE UI DE CACHÉ ---
+
+        function saveToCache() {
+            browserCache = {
+                hasData: true,
+                version: serverState.version,
+                etag: getEtag(),
+                lastModified: new Date(serverState.lastModified),
+                policyStored: serverState.policy,
+                expiresAt: serverState.policy.includes('max-age') ? Date.now() + 10000 : 0
+            };
+            updateCacheUI();
+        }
+
+        function clearCache() {
+            browserCache = { hasData: false, version: null, etag: null, lastModified: null, expiresAt: null, policyStored: null };
+            updateCacheUI();
+            addLog('sys', `Caché local borrado por el usuario.`);
+        }
+
+        function updateCacheUI() {
+            const emptyDiv = document.getElementById('cacheEmpty');
+            const dataDiv = document.getElementById('cacheData');
+            
+            if (!browserCache.hasData) {
+                emptyDiv.classList.remove('hidden');
+                dataDiv.classList.add('hidden');
+                clearInterval(cacheTimerInterval);
+                return;
+            }
+
+            emptyDiv.classList.add('hidden');
+            dataDiv.classList.remove('hidden');
+
+            document.getElementById('cachePolicyTxt').innerText = browserCache.policyStored;
+            document.getElementById('cacheEtag').innerText = browserCache.etag;
+            
+            // Format short date
+            const d = browserCache.lastModified;
+            document.getElementById('cacheDate').innerText = `${d.getHours()}:${d.getMinutes()}:${d.getSeconds()}`;
+
+            clearInterval(cacheTimerInterval);
+            
+            if (browserCache.policyStored === 'no-cache') {
+                document.getElementById('cacheTimer').innerText = "Forzado (Stale)";
+                setCacheBadge('STALE (no-cache)', 'bg-yellow-100', 'text-yellow-800', 'border-yellow-300');
+            } else {
+                updateTimer();
+                cacheTimerInterval = setInterval(updateTimer, 100);
+            }
+        }
+
+        function updateTimer() {
+            if (!browserCache.hasData || browserCache.policyStored === 'no-cache') return;
+            
+            const remaining = browserCache.expiresAt - Date.now();
+            if (remaining > 0) {
+                document.getElementById('cacheTimer').innerText = `${(remaining / 1000).toFixed(1)}s`;
+                setCacheBadge('FRESH', 'bg-green-100', 'text-green-800', 'border-green-300');
+            } else {
+                document.getElementById('cacheTimer').innerText = "0.0s";
+                setCacheBadge('STALE (Expirado)', 'bg-red-100', 'text-red-800', 'border-red-300');
+                clearInterval(cacheTimerInterval);
+            }
+        }
+
+        function setCacheBadge(text, bgClass, textClass, borderClass) {
+            const badge = document.getElementById('cacheFreshness');
+            badge.innerText = text;
+            badge.className = `px-2 py-1 text-[10px] font-bold rounded bg-opacity-50 border ${bgClass} ${textClass} ${borderClass}`;
+        }
+
+        // --- UTILS Y ANIMACIONES ---
+
+        function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+        function pulseNode(nodeId) {
+            const el = document.getElementById(nodeId);
+            el.classList.remove('node-pulse');
+            void el.offsetWidth;
+            el.classList.add('node-pulse');
+        }
+
+        function animatePacket(packetId, type) {
+            const el = document.getElementById(packetId);
+            el.className = 'packet';
+            void el.offsetWidth;
+            if (type === 'req') el.classList.add('animate-req');
+            else if (type === 'res') el.classList.add('animate-res');
+            else if (type === 'res-304') el.classList.add('animate-res-304');
+            else if (type === 'res-err') el.classList.add('animate-res-err');
+        }
+
+        function addLog(type, htmlContent) {
+            const logContainer = document.getElementById('networkLogs');
+            const entry = document.createElement('div');
+            
+            let cssClasses = "p-3 rounded border-l-4 break-words text-xs shadow-sm bg-[#252526] ";
+            if (type === 'success') cssClasses += 'border-green-500';
+            else if (type === 'network') cssClasses += 'border-purple-500';
+            else if (type === 'sys') cssClasses += 'border-blue-400 text-blue-200';
+            else if (type === 'warn') cssClasses += 'border-yellow-500';
+            else if (type === 'error') cssClasses += 'border-red-500';
+
+            entry.className = cssClasses;
+            entry.innerHTML = htmlContent;
+            
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function clearLogs() {
+            document.getElementById('networkLogs').innerHTML = '<div class="text-gray-500 text-xs italic">// Consola limpiada.</div>';
+        }
+    </script>
+</body>
+</html>
